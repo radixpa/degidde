@@ -1,7 +1,9 @@
 from .models import User, ExternalUser, Permission
+from .utils import ExpireDict, is_email
 
 
-_group_permissions_cache = {}
+# In process cache, with 1 day expiration
+_group_permissions_cache = ExpireDict(24 * 60 * 60)
 
 
 class ModelBackend(object):
@@ -11,7 +13,7 @@ class ModelBackend(object):
         '''
         Here username can also be the user's email address.
         '''
-        if '@' in username:
+        if u'@' in username:
             u = self.user_cls.fetch_by_email(username)
             if not u.is_validated:
                 u = None
@@ -32,10 +34,9 @@ class ModelBackend(object):
         return _group_permissions_cache[group]
 
     def has_perm(self, user_obj, perm):
-        r = perm in self.get_group_permissions(user_obj)
-        if r:
-            return r
-        return bool(Permission.fetch(user_obj.username, perm))
+        # Faster for users that have the permission
+        return (perm in self.get_group_permissions(user_obj)
+                or bool(Permission.fetch(user_obj.username, perm))
 
 
 class ExternalUserBackend(ModelBackend):

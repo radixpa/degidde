@@ -1,249 +1,276 @@
-from google.appengine.ext import db
+import datetime
+import operator
 
-from .models_base import *
+from django.conf import settings
+from django.contrib.auth.models import User as _User, UNUSABLE_PASSWORD, AnonymousUser
+from django.core.exceptions import ImproperlyConfigured
 
-
-def _insert(obj, id):
-    def txn():
-        if not obj.fetch(id):
-            obj.put()
-            return obj
-
-    if self.is_saved():
-        return
-    if self._session_key:
-        return db.run_in_transaction(txn)
+from .utils import urlquote, cache, FUTURE_DATETIME
+from .services import get_service
 
 
-class Session(db.Model):
-    session_data = db.BlobProperty(required=True)
-    expire_date = db.DateTimeProperty(required=True, indexed=False)
+SUPERUSER_RANKS = ('_superuser',)
+STAFF_RANKS = ('_staff',) + SUPERUSER_RANKS
+USER_URL_FORMAT = getattr(settings, 'USER_URL_FORMAT', '/users/%s')
+USER_CACHE_TIMEOUT = getattr(settings, 'USER_CACHE_TIMEOUT', 0)
+USER_CONFIRM_EXTERNAL = getattr(settings, 'USER_CONFIRM_EXTERNAL', False)
 
+
+_get_full_name = operator.attrgetter('full_name')
+
+
+def validate_permission(username, group, perm):
+    if not (group in getattr(settings, 'USER_GROUPS', ())
+        or group in SUPERUSER_RANKS or group in STAFF_RANKS):
+        raise ValueError("Invalid group %s" % group)
+    if not perm in getattr(settings, 'USER_PERMISSIONS', ()):
+        raise ValueError("Invalid permission %s" % perm)
+
+
+class UserBase(_User):
     def __init__(self, *args, **kwargs):
-        key = kwargs.pop('session_key', None)
-        if key:
-            super(Session, self).__init__(key_name=key, *args, **kwargs)
-        else:
-            super(Session, self).__init__(*args, **kwargs)
-        self._session_key = key
+        email = kwargs.get('email')
+        if email:
+            self.email = email.strip().lower()
+        password = kwargs.get('password')
+        if password:
+            self.set_password(password)
 
     @property
-    def session_key(self):
-        if self.is_saved():
-            return self.key().name()
-        return self._session_key
-
-    @classmethod
-    def fetch(cls, session_key, expires_after=None):
-        obj = cls.get_by_key_name(session_key)
-        if expires_after:
-            return expires_after < obj.expire_date and obj or None
-        return obj
-
-    @classmethod
-    def remove(cls, session_key):
-        db.delete(db.Key.from_path(cls.kind(), session_key))
-
-    def save(self, force_insert=False):
-        if force_insert and self._session_key:
-            return _insert(self, self._session_key)
-        self.put()
-        return self
-
-
-class Permission(db.Model):
-    # This properties will all be cached!
-    granted_by = db.StringProperty(required=True)
-    date_granted = db.DateTimeProperty(auto_now_add=True)
-    #expires = db.DateTime...
-
-    _group_pre = '@'
-    _perm_pre = '/'
-
-    def __init__(self, *args, **kwargs):
-        # group must be one of the predefined groups in settings,
-        # same applies to perm.
-
-        perm = kwargs.pop('perm', None)
-        if perm:
-            username = kwargs.pop('username', None)
-            group = kwargs.pop('group', None)
-            validate_permission(username, group, perm)
-            key = self._make_key_name(username, group, perm)
-            self.username = username
-            self.group = group
-            self.perm = perm
-            super(Permission, self).__init__(key_name = key, *args, **kwargs)
-        else:
-            super(Permission, self).__init__(*args, **kwargs)
-            self.username, self.group, self.perm = self._parse_key_name()
-
-    @classmethod
-    def _make_key_name(cls, username, group, perm):
-        if group:
-            start = cls._group_pre + group
-        else:
-            start = username # There must be a username
-        return start + cls._perm_pre + (perm or '')
-    
-    @classmethod
-    def _parse_key_name(cls, key_name):
-        start, perm = key_name.split(self._perm_pre, 1)
-        username = group = None
-        if start.startswith(cls._group_pre):
-            group = start[1:]
-        else:
-            username = start
-        return username, group, perm or None
- 
-    _cache_key = lambda cls, group, perm: not perm and group
-    @cache(_cache_key, namespace='Permission')
-    def fetch_by_group(cls, group, perm=None):
-        return cls.fetch(None, perm, _group=group)
-
-    save = fetch_by_group.invalidate(lambda self: self.group)(db.Model.put)
-
-    @fetch_by_group.invalidate(_cache_key)
-    def remove_by_group(cls, group, perm=None):
-        return cls.remove(None, perm, _group=group)
-
-    fetch_by_group = classmethod(fetch_by_group)
-    remove_by_group = classmethod(remove_by_group)
-
-    def remove(cls, username, perm=None, _group=None):
-        if not (username or _group):
-            return
-        key = cls._make_key_name(username, _group, perm)
-        if perm:
-            db.delete(db.Key(cls.kind(), key))
-        else:
-            db.delete(list(cls.all(keys_only=True).filter(
-                '__key__ >', db.Key.from_path(cls.kind(), key)
-            ).filter(
-                '__key__ <', db.Key.from_path(cls.kind(), key + u'\ufffd')
-            )))
-        
-    @classmethod
-    def fetch(cls, username, perm=None, _group=None):
-        if not (username or _group):
-            return ()
-        key = cls._make_key_name(username, _group, perm)
-        if perm:
-            return cls.get_by_key_name(key)
-        else:
-            return cls.all().filter(
-                '__key__ >', db.Key.from_path(cls.kind(), key)
-            ).filter(
-                '__key__ <', db.Key.from_path(cls.kind(), key + u'\ufffd')
-            )
-
-
-class User(db.Model, UserBase):
-    full_name = db.StringProperty()
-    email = db.EmailProperty(required=True)
-    password = db.StringProperty(default=UNUSABLE_PASSWORD, indexed=False)
-    group = db.StringProperty()
-    is_active = db.BooleanProperty(default=True)
-    date_validated = db.DateTimeProperty(default=FUTURE_DATETIME)
-    last_login = db.DateTimeProperty(auto_now_add=True)
-    date_joined = db.DateTimeProperty(auto_now_add=True)
-    aliased_to = db.StringProperty()
-
-    def __init__(self, *args, **kwargs):
-        key = kwargs.pop('username', None)
-        if key:
-            super(User, self).__init__(key_name=key, *args, **kwargs)
-        else:
-            super(User, self).__init__(*args, **kwargs)
-        self._username = key
+    def is_staff(self):
+        return self.group in STAFF_RANKS
 
     @property
-    def username(self):
-        if self.is_saved():
-            return self.key().name() #Assumes that a key will always have a name
-        return self._username
+    def is_superuser(self):
+        return self.group in SUPERUSER_RANKS
 
-    def fetch(cls, username):
-        return cls.get_by_key_name(username)
+    @property
+    def is_validated(self):
+        return bool(self.date_validated) and self.date_validated < datetime.datetime.now()
 
-    def remove(cls, username):
-        db.delete(db.Key.from_path(cls.kind(), username))
-    
-    def save(self, force_insert=False):
-        if force_insert and self._username:
-            return _insert(self, self._username)
-        self.put()
-        return self
+    id = property(operator.attrgetter('username'))
 
-    if USER_CACHE_TIMEOUT:
-        _cache_key = lambda cls, username: username
-        fetch = cache(_cache_key, timeout=USER_CACHE_TIMEOUT, namespace='User')(fetch)
-        save = fetch.invalidate(lambda self: self.username)(save)
-        remove = fetch.invalidate(_cache_key)(remove)
-    fetch = classmethod(fetch)
-    remove = classmethod(remove)
- 
-    @classmethod
-    def fetch_by_email(cls, email, first=True):
-        query = cls.all().filter('email', email).order('date_validated')
-        if first:
-            return query.get()
-        return query #reconsider!
+    def get_absolute_url(self):
+        return USER_URL_FORMAT % urlquote(self.username)
 
-    @classmethod
-    def fetch_by_alias(cls, alias):
-        obj = cls.all().filter('aliased_to', alias).get()
-        if obj:
-            return obj
+    get_full_name = _get_full_name
+    is_external = _User.is_anonymous
 
-        alias = UserAlias.get_by_key_name(alias)
-        if alias:
-            return cls.fetch(alias.username)
+    def dump(self):
+        r = {'username': self.username, 'email': self.email}
+        if self.full_name is not None:
+            r['full_name'] = self.full_name
+        if self.group is not None:
+            r['group'] = self.group
+        inactive = not self.is_active
+        if inactive:
+            r['inactive'] = inactive
+        return r
 
-    def save_alias(self, alias):
-        UserAlias(key_name=alias, username=self.username).put()
-
-    def remove_alias(self, alias):
-        db.delete(db.Key(UserAlias.kind(), alias))
-
-    def list_aliases(self):
-        return [k.name() for k 
-                in UserAlias.all(keys_only=True).filter('username', self.username)]
-
-
-# TODO: Add ratelimiting and/or recaptcha
-# There should be a way for users to provide a username after they do external login
-
-
-class UserAlias(db.Model):
-    username = db.StringProperty(required=True)
-    # this will only work when using the ModelBackend
-    # TODO: this should allow users to change their username
-    
-    #def __init__(self, *args, **kwargs):
-    #    key = kwargs.pop('alias')
-    #    if key:
-    #        super(UserAlias, self).__init__(key_name=key, *args, **kwargs)
-    #    else:
-    #        super(UserAlias, self).__init__(*args, **kwargs)
-    #    self._alias = key
+    def validate(self):
+        if not self.is_validated():
+            self.date_validated = datetime.datetime.now()
         
-    #@property
-    #def alias(self):
-    #    if self.is_saved():
-    #        return self.key().name()
-    #    return self._alias
+    def __eq__(self, obj):
+        if not isinstance(obj, self.__class__):
+            return False
+        if self.username:
+            return self.username == obj.username
+        return self is obj
 
-    #@classmethod
-    #def fetch(cls, alias):
-    #    return cls.get_by_key_name(alias)
+    def __ne__(self, obj):
+        return not self.__eq__(obj)
 
-    #@classmethod
-    #def remove(cls, alias):
-    #    db.delete(db.Key.from_path(cls.kind(), alias))
+    def __hash__(self):
+        return hash(self.username)
 
-    #def save(self, force_insert=False):
-    #    if force_insert and self._alias:
-    #        return _insert(self, self._alias)
-    #    self.put()
-    #    return self
+    def get_profile(self):
+        raise NotImplementedError
+    get_and_delete_messages = get_profile
+
+
+class Error(Exception):
+    pass
+
+
+class UnconfirmedPropertyError(Error, AttributeError):
+    pass
+
+
+class UsernameTakenError(Error):
+    pass
+
+
+def _external_property(name):
+    def getter(self):
+        if not hasattr(self, '_user_cache'):
+            #optimized for current user, cached in session, etc...
+            self._user_cache = self.service.get_user(self.id)
+        return self._user_cache.get(name)
+    getter.__name__ = name
+    return property(getter)
+
+
+def _unconfirmed_property(name):
+    hname = '_' + name
+    def getter(self):
+        try:
+            v = getattr(self, hname)
+        except AttributeError:
+            raise UnconfirmedPropertyError
+        else:
+            if v is EXTERNAL:
+                return getattr(self, 'external_' + name)
+            return v
+
+    def setter(self, value):
+        if setter_callback:
+            setter_callback(self, value)
+        setattr(self, hname, value)
+
+    return property(getter, setter)
+        
+
+EXTERNAL = object()
+
+
+AnonymousUser.group = None
+AnonymousUser.is_validated = False
+AnonymousUser.is_external = AnonymousUser.is_authenticated
+AnonymousUser.validate = AnonymousUser.save
+AnonymousUser.aliased_to = None
+
+class ExternalUser(AnonymousUser):
+    external_username = _external_property('username')
+    external_full_name = _external_property('full_name')
+    external_email = _external_property('email')
+    if USER_CONFIRM_EXTERNAL:
+        username = _unconfirmed_property('username')
+        full_name = _unconfirmed_property('full_name')
+        email = _unconfirmed_property('email',
+                                      lambda s, v: setattr(s, 'is_validated', False))
+    else:
+        username = external_username
+        full_name = external_full_name
+        email = external_email
+    # this will send confirmation emails if needed!
+    is_active = True
+    last_login = None
+    user = None
+    _service = None
+
+    def __init__(self, id): # service handles caching
+        # TODO: there must be a way for a user to disallow further logging in
+        # through a particular external account
+        # Certain actions (like creating an article, and disallowing an ext login) 
+        # must only be allowed after authenticating with a password
+        self.id = self._id = id
+
+    def __unicode__(self):
+        return self._id
+
+    def __eq__(self, obj):
+        if not isinstance(obj, self.__class__):
+            return False
+        return self._id == obj._id
+
+    def __hash__(self):
+        return hash(self._id)
+
+    get_full_name = _get_full_name
+    is_anonymous = lambda self: False
+    is_authenticated = lambda self: True
+    is_external = is_authenticated
+    email_user = _User.email_user.__func__
+
+    @classmethod
+    def fetch(cls, id=None, service=None):
+        if not id:
+            try:
+                id = service.get_user()["id"]
+            except AttributeError:
+                raise TypeError
+ 
+        u = cls(id)
+        if service:
+            u._service = service
+            if service.is_email_service():
+                u.validate()
+        return u
+
+    @property
+    def service(self):
+        if not self._service:
+            self._service = get_service(self._id)(self.request)
+        return self._service
+
+    if USER_CONFIRM_EXTERNAL: 
+        #TODO: handle case in which a user registers more than once,
+        #i.e. there is more than one User instance with the same email.
+        def save(self):
+            # TODO: review all the different cases!
+            from .auth_backends import UserBackend
+            from .models import User
+
+            # if possible, convert into User
+            user = None
+            try:
+                user = User(username=self.username)
+            except AttributeError:
+                user = User.fetch_by_alias(self.id)
+                # An aliased user is found when someone logs in externally
+                # *for the second time* with the same service.
+                if not user and self.is_validated:
+                    user = User.fetch_by_email(self.email)
+                    user.aliased_to = self.id
+                # The new User entity still needs to be validated, but shortcut validation 
+                # can be used by accessing the 'login info' as stored in the session.
+                # The user must be alerted about the "old" account he's using.
+                if user:
+                    user.last_login = self.last_login
+                    self.id = user.id
+                    user.save()
+            else:
+                user.full_name = getattr(self, 'full_name', None)
+                user.email = self.email
+                user.last_login = self.last_login
+                user.aliased_to = self.id
+                self.id = user.id
+                if self.is_validated:
+                    user.validate()
+                if not user.save(force_insert=True):
+                    raise UsernameTakenError
+        
+        if user:
+            self.user = user #this may be useful...
+            self.backend = UserBackend
+            return user
+
+        def validate(self):
+            self.email = EXTERNAL
+            self.is_validated = True
+
+    else:
+        save = lambda self: None
+    
+        def validate(self):
+            self.is_validated = True
+
+    def dump(self):
+        r = {'username': self.username, 'email': self.email}
+        if self.full_name is not None:
+            r['full_name'] = self.full_name
+        return r 
+
+
+from importlib import import_module
+try:
+    modname = conf["MODELS_BACKEND"]
+except KeyError:
+    raise ImproperlyConfigured #...
+models = import_module(modname)
+
+Session = models.Session
+User = models.User
+Permission = models.Permission
+dump = models.dump

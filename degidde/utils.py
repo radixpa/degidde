@@ -1,5 +1,7 @@
+import collections
 import datetime
 import functools
+import time
 import urllib
 
 from django.core import cache as _cache
@@ -48,3 +50,74 @@ def cache(key_func, timeout=None, namespace=None,
                                          _force_set=True)
         return w
     return decorator
+
+
+#def is_email(string):
+#    from django.core.validators import email_re
+#    
+#    if u'@' not in string:
+#        return False
+#
+#    m = email_re.match(string) 
+#    if not m:
+#        parts = string.split(u'@')
+#        domain_part = parts[-1]
+#        try:
+#            parts[-1] = parts[-1].encode('idna')
+#        except UnicodeError:
+#            return False
+#        m = email_re.match(u'@'.join(parts))
+#    return bool(m)
+
+
+class ExpireDict(collections.MutableMapping, dict):
+    def __init__(self, it=(), timeout=None):
+        dict.__init__(self, it)
+        self.timeout = timeout
+        self._exp = {}
+
+    __contains__ = dict.__contains__
+    __iter__ = dict.__iter__
+    __len__ = dict.__len__
+
+    def __getitem__(self, k):
+        v = dict.__getitem__(self, k)
+        e = self._exp[k]
+        if e < time.time():
+            dict.pop(self, k, None)
+            self._exp.pop(k, None)
+            raise KeyError(k)
+        return v
+
+    def __setitem__(self, k, v):
+        dict.__setitem__(self, k, v)
+        self._exp[k] = time.time() + self.timeout
+        
+    def __delitem__(self, k):
+        dict.__delitem__(self, k)
+        self._exp.pop(k, None)
+
+    def __repr__(self):
+        return "%s(%s, timeout=%r)" % (
+            self.__class__.__name__,
+            dict.__repr__(self),
+            self.timeout)
+
+
+class Encoder(JSONEncoder):
+    def default(self, obj):
+        from .models import dump
+        try:
+            return dump(obj)
+        except TypeError:
+            pass
+        try:
+            return obj.dump()
+        except AttributeError:
+            pass
+        try:
+            return list(obj)
+        except TypeError:
+             pass
+        return super(Encoder, self).default(obj)
+        

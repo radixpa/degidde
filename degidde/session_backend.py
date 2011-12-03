@@ -12,9 +12,8 @@ from .utils import as_base_of
 @as_base_of(CacheStore)
 class SessionStore(SessionBase):
     def load(self):
-        s = Session.fetch(self.session_key, 
-                          expires_after=datetime.datetime.now())
-        if s:
+        s = Session.fetch(self.session_key) 
+        if s and datetime.datetime.now() < s.expire_date:
             try:
                 return self.decode(force_unicode(s.session_data))
             except SuspiciousOperation:
