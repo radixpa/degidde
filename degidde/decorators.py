@@ -9,7 +9,6 @@ from .models import AnonymousUser
 from .services import get_service 
 from .utils import addr, DEGIDDE
 
-# When a user logs in somewhere else, he should be logged out(?)
 
 SCOPES = getattr(settings, DEGIDDE, {}).get('SCOPES') or {}
 GLOBAL_MAXC, GLOBAL_PERIOD = SCOPES.get("", (60, 60))
@@ -17,13 +16,22 @@ LOGIN_SERVICE_KEY = '_degidde_login_service'
 VALIDATE_URL = getattr(settings, 'VALIDATE_URL', '/validate')
 
 
+# http://codahale.com/a-lesson-in-timing-attacks/
+# says "how many of you throttle requests with bad session cookies?"
+# Limitting sessions to one IP address may also help.
+# http://stackoverflow.com/questions/821870/how-can-i-detect-multiple-logins-into-a-django-web-application-from-different-lo
+# http://stackoverflow.com/questions/5055608/django-signals-on-gae-with-django-nonrel
+# When a user logs in somewhere else, he should be logged out.
+# Trying to login with same username from multiple locations simultaneosly is suspicious behavior.
+# Remember throttling password reset link, and other views, besides login.
+# What about "rememberme", i.e. session cookies that last indefinitely?
 def throttle(function=None, scope=None, _sep='|'):
     from django.core import cache
 
     # Throttling is done per user, or per IP if the user is anonymous.
     # Due to this, login will effectively have the lowest possible 
-    # max rate. The global max rate is effectively the greatest
-    # possible max rate.
+    # max rate (*more accurately* changing the session cookie!). 
+    # The global max rate is effectively the greatest possible max rate.
 
     def actual_decorator(view):
         @functools.wraps(view)
@@ -91,7 +99,7 @@ def sensitive(function=None, safe_login=True):
                 # If user is logged in through unsafe means, the user must log in again.
                 # "Logged in login" must be stricter than "non-logged in login".
                 login_service = request.session[LOGIN_SERVICE_KEY]
-                if login_service and not get_service(login_service).is_email_service():
+                if login_service and not get_service(login_service).is_email_service:
                     request.user = AnonymousUser()
             return view(request, *args, **kwargs)
         return wrapper  

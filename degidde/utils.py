@@ -3,11 +3,13 @@ import datetime
 import functools
 import time
 import urllib
+import urlparse
 
-from django.core import cache as _cache
 from django.utils.encoding import smart_str
+from django.http import HttpResponseRedirect
 
 
+DEGIDDE = "DEGIDDE"
 FUTURE_DATETIME = datetime.datetime.fromtimestamp(0xffffffff) #Y2106!
 
 
@@ -22,9 +24,39 @@ def as_base_of(sub):
 def urlquote(s):
     return urllib.quote(smart_str(s))
 
+
+def addr(request):
+    return request.META.get('HTTP_X_FORWARDED_FOR') or request.META['REMOTE_ADDR']
+
+
+def same_origin_redirect(request, redirect_to, origin=None):
+    if redirect_to is None:
+        return
+    origin = origin or (request.is_secure() and 'https://' or 'http://') + request.get_host()
+    parts = urlparse.urlparse(redirect_to)
+    netloc = netloc[1] and netloc[0] + '://' + netloc[1]
+    # Serurity: Don't allow redirection to a different host!
+    if not (netloc and netloc != origin):
+        return HttpResponseRedirect(redirect_to)
+
+
+def invalid_csrf_token(request, csrf_token):
+    from django.middleware.csrf import CsrfViewMiddleware, REASON_BAD_TOKEN, REASON_NO_CSRF_COOKIE
+    # TODO: this doesn't handle the the referer check for https.
+
+    if getattr(request, 'csrf_processing_done', False):
+        return
+    cookie = request.META.get('CSRF_COOKIE')
+    if cookie is None:
+        return CsrfViewMiddleware()._reject(request, REASON_NO_CSRF_COOKIE)
+    if csrf_token != cookie: #TODO: use contant_time_compare in next version of django
+        return CsrfViewMiddleware()._reject(request, REASON_BAD_TOKEN)
         
+
 def cache(key_func, timeout=None, namespace=None, 
           _force_set=False, _namespace_sep=':'):
+    from django.core import cache as _cache
+
     _namespace = cache.__module__ + '.' + cache.__name__
     def decorator(func):
         namespace = _namespace + _namespace_sep + namespace or func.__name__

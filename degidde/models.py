@@ -5,25 +5,26 @@ from django.conf import settings
 from django.contrib.auth.models import User as _User, UNUSABLE_PASSWORD, AnonymousUser
 from django.core.exceptions import ImproperlyConfigured
 
-from .utils import urlquote, cache, FUTURE_DATETIME
+from .utils import urlquote, cache, FUTURE_DATETIME, DEGIDDE
 from .services import get_service
 
 
+conf = getattr(settings, DEGIDDE, {})
 SUPERUSER_RANKS = ('_superuser',)
 STAFF_RANKS = ('_staff',) + SUPERUSER_RANKS
-USER_URL_FORMAT = getattr(settings, 'USER_URL_FORMAT', '/users/%s')
-USER_CACHE_TIMEOUT = getattr(settings, 'USER_CACHE_TIMEOUT', 0)
-USER_CONFIRM_EXTERNAL = getattr(settings, 'USER_CONFIRM_EXTERNAL', False)
+USER_URL_FORMAT = conf.get('USER_URL_FORMAT', '/users/%s')
+USER_CACHE_TIMEOUT = conf.get('USER_CACHE_TIMEOUT', 0)
+USER_CONFIRM_EXTERNAL = conf.get('USER_CONFIRM_EXTERNAL', False)
 
 
 _get_full_name = operator.attrgetter('full_name')
 
 
 def validate_permission(username, group, perm):
-    if not (group in getattr(settings, 'USER_GROUPS', ())
+    if not (group in conf.get('GROUPS', ())
         or group in SUPERUSER_RANKS or group in STAFF_RANKS):
         raise ValueError("Invalid group %s" % group)
-    if not perm in getattr(settings, 'USER_PERMISSIONS', ()):
+    if perm not in conf.get('PERMISSIONS', ()):
         raise ValueError("Invalid permission %s" % perm)
 
 
@@ -111,7 +112,7 @@ def _external_property(name):
     return property(getter)
 
 
-def _unconfirmed_property(name):
+def _unconfirmed_property(name): #reconsider!
     hname = '_' + name
     def getter(self):
         try:
@@ -194,14 +195,14 @@ class ExternalUser(AnonymousUser):
         u = cls(id)
         if service:
             u._service = service
-            if service.is_email_service():
+            if service.is_email_service:
                 u.validate()
         return u
 
     @property
     def service(self):
         if not self._service:
-            self._service = get_service(self._id)(self.request)
+            self._service = get_service(self._id)(self._request)
         return self._service
 
     if USER_CONFIRM_EXTERNAL: 
@@ -209,7 +210,7 @@ class ExternalUser(AnonymousUser):
         #i.e. there is more than one User instance with the same email.
         def save(self):
             # TODO: review all the different cases!
-            from .auth_backends import UserBackend
+            from .auth_backends import UserBackend as backend
             from .models import User
 
             # if possible, convert into User
@@ -228,27 +229,30 @@ class ExternalUser(AnonymousUser):
                 # The user must be alerted about the "old" account he's using.
                 if user:
                     user.last_login = self.last_login
-                    self.id = user.id
+                    #self.id = user.id
                     user.save()
             else:
                 user.full_name = getattr(self, 'full_name', None)
                 user.email = self.email
                 user.last_login = self.last_login
                 user.aliased_to = self.id
-                self.id = user.id
+                #self.id = user.id
                 if self.is_validated:
                     user.validate()
                 if not user.save(force_insert=True):
                     raise UsernameTakenError
         
-        if user:
-            self.user = user #this may be useful...
-            self.backend = UserBackend
-            return user
+            if user:
+                #self.user = user #this may be useful...
+                #self.backend = "%s.%s" % (backend.__module__, backend.__class__.__name__)
+                return user
 
         def validate(self):
             self.email = EXTERNAL
             self.is_validated = True
+
+        def _get_model(self):
+            pass
 
     else:
         save = lambda self: None

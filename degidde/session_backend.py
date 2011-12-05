@@ -1,7 +1,7 @@
 import datetime
 
 from django.contrib.sessions.backends.base import SessionBase, CreateError
-django.contrib.sessions.backends.cached_db import SessionStore as CacheStore
+from django.contrib.sessions.backends.cached_db import SessionStore as CacheStore
 from django.core.exceptions import SuspiciousOperation
 from django.utils.encoding import force_unicode
 
@@ -17,6 +17,8 @@ class SessionStore(SessionBase):
             try:
                 return self.decode(force_unicode(s.session_data))
             except SuspiciousOperation:
+                # TODO: this looks like the place to throttle
+                # against an attempt trying to guess a valid session cookie
                 pass
         self.create()
         return {}

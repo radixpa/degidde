@@ -1,9 +1,10 @@
+
 from .models import User, ExternalUser, Permission
-from .utils import ExpireDict, is_email
+from .utils import ExpireDict
 
 
 # In process cache, with 1 day expiration
-_group_permissions_cache = ExpireDict(24 * 60 * 60)
+_group_perms_cache = ExpireDict(86400)         # 24 * 60 * 60
 
 
 class ModelBackend(object):
@@ -27,16 +28,30 @@ class ModelBackend(object):
 
     def get_group_permissions(self, user_obj):
         group = user_obj.group
-        if group not in _group_permissions_cache:
+        if group not in _group_perms_cache:
             # This must be as idempotent as possible!
             perms = frozenset(p.perm for p in Permission.fetch_by_group(user_obj.group))
-            _group_permissions_cache[group] = perms
-        return _group_permissions_cache[group]
+            _group_perms_cache[group] = perms
+        return _group_perms_cache[group]
 
     def has_perm(self, user_obj, perm):
-        # Faster for users that have the permission
-        return (perm in self.get_group_permissions(user_obj)
-                or bool(Permission.fetch(user_obj.username, perm))
+        # Faster for users that have the permission.
+        # This is not enough for checking persmissions,
+        # ensuring the connexion is secure and, that
+        # the user has logged in with a password, is
+        # also required. Use a decorator for this.
+
+        r = perm in self.get_group_permissions(user_obj)
+        if r:
+            return True
+        if not hasattr(user_obj, '_perm_cache'):
+            user_obj._perm_cache = set()
+        if perm in user_obj._perm_cache:
+            return True
+        if Permission.fetch(user_obj.username, perm):
+            user_obj._perm_cache.add(perm)
+            return True
+        return False
 
 
 class ExternalUserBackend(ModelBackend):
