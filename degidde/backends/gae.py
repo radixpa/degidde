@@ -155,7 +155,8 @@ class Permission(db.Model):
 
 
 class User(db.Model, UserBase):
-    full_name = db.StringProperty()
+    csusername = db.StringProperty(indexed=False) # Case sensitive username
+    full_name = db.StringProperty(indexed=False)
     email = db.EmailProperty(required=True)
     password = db.StringProperty(default=UNUSABLE_PASSWORD, indexed=False)
     group = db.StringProperty()
@@ -169,6 +170,7 @@ class User(db.Model, UserBase):
         key = kwargs.pop('username', None)
         if key:
             super(User, self).__init__(key_name=key, *args, **kwargs)
+            #UserBase.__init__(self, username=key, *args, **kwargs)
         else:
             super(User, self).__init__(*args, **kwargs)
         self._username = key

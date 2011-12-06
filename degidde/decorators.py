@@ -6,13 +6,13 @@ from django.conf import settings
 from django.http import HttpResponse, HttpResponseRedirect
 
 from .models import AnonymousUser
-from .services import get_service 
+from .services import get_service, LOGIN_SERVICE_KEY
 from .utils import addr, DEGIDDE
 
 
 SCOPES = getattr(settings, DEGIDDE, {}).get('SCOPES') or {}
 GLOBAL_MAXC, GLOBAL_PERIOD = SCOPES.get("", (60, 60))
-LOGIN_SERVICE_KEY = '_degidde_login_service'
+#LOGIN_SERVICE_KEY = '_degidde_login_service'
 VALIDATE_URL = getattr(settings, 'VALIDATE_URL', '/validate')
 
 

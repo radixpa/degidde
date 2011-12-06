@@ -16,7 +16,7 @@ class ModelBackend(object):
         '''
         if u'@' in username:
             u = self.user_cls.fetch_by_email(username)
-            if not u.is_validated:
+            if u and not u.is_validated:
                 u = None
         else:
             u = User.fetch(username)

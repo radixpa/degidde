@@ -30,7 +30,7 @@ def addr(request):
 
 
 def same_origin_redirect(request, redirect_to, origin=None):
-    if redirect_to is None:
+    if not redirect_to:
         return
     origin = origin or (request.is_secure() and 'https://' or 'http://') + request.get_host()
     parts = urlparse.urlparse(redirect_to)

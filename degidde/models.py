@@ -29,13 +29,14 @@ def validate_permission(username, group, perm):
 
 
 class UserBase(_User):
-    def __init__(self, *args, **kwargs):
-        email = kwargs.get('email')
-        if email:
-            self.email = email.strip().lower()
-        password = kwargs.get('password')
-        if password:
-            self.set_password(password)
+    #def __init__(self, *args, **kwargs):
+        # Cleaning the email is mainly the task of the form
+        #email = kwargs.get('email')
+        #if email:
+        #    self.email = email.strip().lower()
+    #    password = kwargs.get('password')
+    #    if password:
+    #        self.set_password(password)
 
     @property
     def is_staff(self):
@@ -59,6 +60,8 @@ class UserBase(_User):
 
     def dump(self):
         r = {'username': self.username, 'email': self.email}
+        if self.csusername is not None:
+            r['csusername'] = self.csusername
         if self.full_name is not None:
             r['full_name'] = self.full_name
         if self.group is not None:
@@ -84,6 +87,10 @@ class UserBase(_User):
 
     def __hash__(self):
         return hash(self.username)
+
+    @property
+    def userName(self):
+        return self.csusername or self.username
 
     def get_profile(self):
         raise NotImplementedError
@@ -140,18 +147,23 @@ AnonymousUser.is_validated = False
 AnonymousUser.is_external = AnonymousUser.is_authenticated
 AnonymousUser.validate = AnonymousUser.save
 AnonymousUser.aliased_to = None
+AnonymousUser.userName = ''
+
 
 class ExternalUser(AnonymousUser):
     external_username = _external_property('username')
+    external_userName = _external_property('userName')
     external_full_name = _external_property('full_name')
     external_email = _external_property('email')
     if USER_CONFIRM_EXTERNAL:
         username = _unconfirmed_property('username')
+        userName = _unconfirmed_property('userName')
         full_name = _unconfirmed_property('full_name')
         email = _unconfirmed_property('email',
                                       lambda s, v: setattr(s, 'is_validated', False))
     else:
         username = external_username
+        userName = external_userName
         full_name = external_full_name
         email = external_email
     # this will send confirmation emails if needed!
@@ -209,6 +221,8 @@ class ExternalUser(AnonymousUser):
         #TODO: handle case in which a user registers more than once,
         #i.e. there is more than one User instance with the same email.
         def save(self):
+            raise NotImplementedError
+   
             # TODO: review all the different cases!
             from .auth_backends import UserBackend as backend
             from .models import User

@@ -59,6 +59,7 @@ class ExternalUserMiddleware(object):
             return HttpResponseRedirect(url)
 
         if isinstance(exception, UnaccessibleServiceError):
+            # what if request.is_ajax() and the user needs to grant access? 
             return HttpResponseRedirect(exception.request_access_url) #TODO: consider other possibilities
 
         # Remember to persist some of the session data after 'confirm' login (e.g. 'login service')
